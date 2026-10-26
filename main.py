@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from database import create_tables, get_connection
 from pwdlib import PasswordHash
 from typing import Literal
+from fastapi import File, UploadFile
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -523,6 +524,85 @@ def update_document(
     finally:
         connection.close()
 
+@app.post("/documents/upload", status_code=201)
+def upload_text_document(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    from pathlib import Path
+
+    if not file.filename or Path(file.filename).suffix.lower() != ".txt":
+        raise HTTPException(
+            status_code=400,
+            detail="Only .txt files are allowed.",
+        )
+
+    max_size = 1_000_000
+    content_bytes = file.file.read(max_size + 1)
+
+    if len(content_bytes) > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail="File exceeds the 1 MB size limit.",
+        )
+
+    try:
+        content = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="File must contain valid UTF-8 text.",
+        )
+
+    if not content.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="File cannot be empty.",
+        )
+
+    title = Path(file.filename).stem.strip()[:200]
+
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail="Filename must contain a valid title.",
+        )
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO documents
+                (organization_id, created_by, title, content, visibility)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                current_user["organization_id"],
+                current_user["id"],
+                title,
+                content,
+                "private",
+            ),
+        )
+
+        connection.commit()
+
+        saved_document = connection.execute(
+            """
+            SELECT id, organization_id, created_by,
+                   title, content, visibility, created_at
+            FROM documents
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+        return dict(saved_document)
+
+    finally:
+        connection.close()
+        file.file.close()
 
 @app.delete("/documents/{document_id}")
 def delete_document(
@@ -588,3 +668,10 @@ def delete_document(
 
     finally:
         connection.close()
+
+
+
+
+for route in app.routes:
+    if "document" in route.path.lower():
+        print(route.path, route.methods)

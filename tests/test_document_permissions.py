@@ -277,3 +277,72 @@ def test_admin_cannot_access_another_organizations_document(
     )
 
     assert response.status_code == 404
+
+
+def test_employee_can_upload_text_document(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={
+            "file": (
+                "interview_notes.txt",
+                b"Important interview preparation notes.",
+                "text/plain",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["title"] == "interview_notes"
+    assert data["content"] == "Important interview preparation notes."
+    assert data["visibility"] == "private"
+
+
+def test_upload_requires_authentication(client):
+    response = client.post(
+        "/documents/upload",
+        files={"file": ("notes.txt", b"Some text", "text/plain")},
+    )
+
+    assert response.status_code == 401
+
+
+def test_upload_rejects_non_text_file(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={"file": ("notes.pdf", b"Some text", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_upload_rejects_empty_file(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={"file": ("empty.txt", b"  \n", "text/plain")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_upload_rejects_invalid_utf8(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={"file": ("invalid.txt", b"\xff\xfe", "text/plain")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_upload_rejects_file_over_1_mb(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={"file": ("large.txt", b"a" * 1_000_001, "text/plain")},
+    )
+
+    assert response.status_code == 413
