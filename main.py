@@ -438,3 +438,87 @@ def get_document(
 
     finally:
         connection.close()
+
+
+@app.put("/documents/{document_id}")
+def update_document(
+    document_id: int,
+    document: DocumentCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    connection = get_connection()
+
+    try:
+        if current_user["role"] == "admin":
+            row = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                ),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND created_by = ?
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                    current_user["id"],
+                ),
+            ).fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found.",
+            )
+
+        connection.execute(
+            """
+            UPDATE documents
+            SET title = ?,
+                content = ?,
+                visibility = ?
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (
+                document.title.strip(),
+                document.content,
+                document.visibility,
+                document_id,
+                current_user["organization_id"],
+            ),
+        )
+
+        connection.commit()
+
+        updated_row = connection.execute(
+            """
+            SELECT id, organization_id, created_by,
+                   title, content, visibility, created_at
+            FROM documents
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (
+                document_id,
+                current_user["organization_id"],
+            ),
+        ).fetchone()
+
+        return dict(updated_row)
+
+    finally:
+        connection.close()
