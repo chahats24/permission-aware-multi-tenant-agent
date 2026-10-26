@@ -4,7 +4,9 @@ from fastapi.testclient import TestClient
 
 import database
 import main
-
+from io import BytesIO
+from pypdf import PdfWriter
+from reportlab.pdfgen import canvas
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -346,3 +348,79 @@ def test_upload_rejects_file_over_1_mb(client, employee_accounts):
     )
 
     assert response.status_code == 413
+
+def create_test_pdf():
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_upload_rejects_pdf_without_extractable_text(
+    client, employee_accounts
+):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={
+            "file": (
+                "blank.pdf",
+                create_test_pdf(),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "The file contains no extractable text."
+
+
+def test_upload_rejects_invalid_pdf(client, employee_accounts):
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={
+            "file": (
+                "broken.pdf",
+                b"This is not a valid PDF file.",
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "PDF is invalid or cannot be read."
+
+
+def test_employee_can_upload_pdf_with_extractable_text(
+    client, employee_accounts
+):
+    from io import BytesIO
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer)
+    pdf.drawString(50, 250, "Permission-aware document testing")
+    pdf.save()
+    pdf_bytes = buffer.getvalue()
+
+    response = client.post(
+        "/documents/upload",
+        headers=employee_accounts["employee_a"],
+        files={
+            "file": (
+                "security_notes.pdf",
+                pdf_bytes,
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+
+    data = response.json()
+    assert data["title"] == "security_notes"
+    assert "Permission-aware document testing" in data["content"]
+    assert data["visibility"] == "private"
+    assert data["created_by"] > 0

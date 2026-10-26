@@ -14,6 +14,9 @@ from database import create_tables, get_connection
 from pwdlib import PasswordHash
 from typing import Literal
 from fastapi import File, UploadFile
+from pypdf import PdfReader
+from io import BytesIO
+from pathlib import Path
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -524,85 +527,117 @@ def update_document(
     finally:
         connection.close()
 
+
 @app.post("/documents/upload", status_code=201)
 def upload_text_document(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
-    from pathlib import Path
+    filename = file.filename or ""
+    extension = Path(filename).suffix.lower()
 
-    if not file.filename or Path(file.filename).suffix.lower() != ".txt":
+    if extension not in {".txt", ".pdf"}:
+        file.file.close()
         raise HTTPException(
             status_code=400,
-            detail="Only .txt files are allowed.",
+            detail="Only .txt and .pdf files are allowed.",
         )
 
     max_size = 1_000_000
     content_bytes = file.file.read(max_size + 1)
 
-    if len(content_bytes) > max_size:
-        raise HTTPException(
-            status_code=413,
-            detail="File exceeds the 1 MB size limit.",
-        )
-
     try:
-        content = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="File must contain valid UTF-8 text.",
-        )
+        if len(content_bytes) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail="File exceeds the 1 MB size limit.",
+            )
 
-    if not content.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="File cannot be empty.",
-        )
+        if extension == ".txt":
+            try:
+                content = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="File must contain valid UTF-8 text.",
+                )
 
-    title = Path(file.filename).stem.strip()[:200]
+        else:
+            try:
+                reader = PdfReader(BytesIO(content_bytes), strict=True)
 
-    if not title:
-        raise HTTPException(
-            status_code=400,
-            detail="Filename must contain a valid title.",
-        )
+                if reader.is_encrypted:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Encrypted PDFs are not supported.",
+                    )
 
-    connection = get_connection()
+                extracted_pages = [
+                    page.extract_text() or ""
+                    for page in reader.pages
+                ]
+                content = "\n".join(extracted_pages)
 
-    try:
-        cursor = connection.execute(
-            """
-            INSERT INTO documents
-                (organization_id, created_by, title, content, visibility)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                current_user["organization_id"],
-                current_user["id"],
-                title,
-                content,
-                "private",
-            ),
-        )
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PDF is invalid or cannot be read.",
+                )
 
-        connection.commit()
+        if not content.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="The file contains no extractable text.",
+            )
 
-        saved_document = connection.execute(
-            """
-            SELECT id, organization_id, created_by,
-                   title, content, visibility, created_at
-            FROM documents
-            WHERE id = ?
-            """,
-            (cursor.lastrowid,),
-        ).fetchone()
+        title = Path(filename).stem.strip()[:200]
 
-        return dict(saved_document)
+        if not title:
+            raise HTTPException(
+                status_code=400,
+                detail="Filename must contain a valid title.",
+            )
+
+        connection = get_connection()
+
+        try:
+            cursor = connection.execute(
+                """
+                INSERT INTO documents
+                    (organization_id, created_by, title, content, visibility)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    current_user["organization_id"],
+                    current_user["id"],
+                    title,
+                    content,
+                    "private",
+                ),
+            )
+
+            connection.commit()
+
+            saved_document = connection.execute(
+                """
+                SELECT id, organization_id, created_by,
+                       title, content, visibility, created_at
+                FROM documents
+                WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+
+            return dict(saved_document)
+
+        finally:
+            connection.close()
 
     finally:
-        connection.close()
         file.file.close()
+
 
 @app.delete("/documents/{document_id}")
 def delete_document(
