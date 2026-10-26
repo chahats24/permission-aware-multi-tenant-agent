@@ -522,3 +522,69 @@ def update_document(
 
     finally:
         connection.close()
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    connection = get_connection()
+
+    try:
+        if current_user["role"] == "admin":
+            row = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                ),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND created_by = ?
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                    current_user["id"],
+                ),
+            ).fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found.",
+            )
+
+        connection.execute(
+            """
+            DELETE FROM documents
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (
+                document_id,
+                current_user["organization_id"],
+            ),
+        )
+
+        connection.commit()
+
+        return {
+            "message": "Document deleted successfully.",
+            "document_id": document_id,
+        }
+
+    finally:
+        connection.close()
