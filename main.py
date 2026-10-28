@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from database import create_tables, get_connection
+from database import create_tables, get_connection, save_document_chunks
 from pwdlib import PasswordHash
 from typing import Literal
 from fastapi import File, UploadFile
@@ -443,6 +443,68 @@ def get_document(
     finally:
         connection.close()
 
+
+@app.post("/documents/{document_id}/chunks")
+def generate_document_chunks(
+    document_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    connection = get_connection()
+
+    try:
+        if current_user["role"] == "admin":
+            document = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                ),
+            ).fetchone()
+        else:
+            document = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND (
+                      created_by = ?
+                      OR visibility = 'organization'
+                  )
+                """,
+                (
+                    document_id,
+                    current_user["organization_id"],
+                    current_user["id"],
+                ),
+            ).fetchone()
+
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found.",
+            )
+
+    finally:
+        connection.close()
+
+    try:
+        chunk_count = save_document_chunks(document_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found.",
+        )
+
+    return {
+        "document_id": document_id,
+        "chunks_created": chunk_count,
+    }
 
 @app.put("/documents/{document_id}")
 def update_document(

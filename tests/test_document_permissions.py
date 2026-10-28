@@ -424,3 +424,81 @@ def test_employee_can_upload_pdf_with_extractable_text(
     assert "Permission-aware document testing" in data["content"]
     assert data["visibility"] == "private"
     assert data["created_by"] > 0
+
+
+def test_employee_can_generate_chunks_for_own_document(
+    client, employee_accounts
+):
+    response = client.post(
+        "/documents",
+        headers=employee_accounts["employee_a"],
+        json={
+            "title": "Chunk Test",
+            "content": " ".join(f"word{i}" for i in range(650)),
+            "visibility": "private",
+        },
+    )
+    assert response.status_code == 201
+    document_id = response.json()["id"]
+
+    response = client.post(
+        f"/documents/{document_id}/chunks",
+        headers=employee_accounts["employee_a"],
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": document_id,
+        "chunks_created": 3,
+    }
+
+
+def test_employee_cannot_generate_chunks_for_private_document(
+    client, employee_accounts
+):
+    response = client.post(
+        "/documents",
+        headers=employee_accounts["employee_a"],
+        json={
+            "title": "Private Document",
+            "content": "This content must remain private.",
+            "visibility": "private",
+        },
+    )
+    assert response.status_code == 201
+    document_id = response.json()["id"]
+
+    response = client.post(
+        f"/documents/{document_id}/chunks",
+        headers=employee_accounts["employee_b"],
+    )
+
+    assert response.status_code == 404
+
+
+def test_employee_cannot_generate_chunks_for_another_organization(
+    client, employee_accounts
+):
+    response = client.post(
+        "/documents",
+        headers=employee_accounts["employee_a"],
+        json={
+            "title": "Organization One Document",
+            "content": "Tenant-specific content.",
+            "visibility": "organization",
+        },
+    )
+    assert response.status_code == 201
+    document_id = response.json()["id"]
+
+    response = client.post(
+        f"/documents/{document_id}/chunks",
+        headers=employee_accounts["employee_c"],
+    )
+
+    assert response.status_code == 404
+
+
+def test_chunk_generation_requires_authentication(client):
+    response = client.post("/documents/1/chunks")
+    assert response.status_code == 401
